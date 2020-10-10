@@ -27,6 +27,7 @@ from django.views.generic.base import (
 
 from django_keycloak.models import Nonce
 from django_keycloak.auth import remote_user_login
+from jose import jwt
 
 
 logger = logging.getLogger(__name__)
@@ -83,10 +84,29 @@ class LoginComplete(RedirectView):
         except Nonce.DoesNotExist:
             return HttpResponseRedirect(reverse('keycloak_login'))
         
+        try:
+            user = authenticate(request=request,
+                                code=request.GET['code'],
+                                redirect_uri=nonce.redirect_uri)
+        except jwt.ExpiredSignatureError:
+            nonce.delete()
+            if hasattr(request.user, 'oidc_profile'):
+                request.realm.client.openid_api_client.logout(
+                    request.user.oidc_profile.refresh_token
+                )
+                request.user.oidc_profile.access_token = None
+                request.user.oidc_profile.expires_before = None
+                request.user.oidc_profile.refresh_token = None
+                request.user.oidc_profile.refresh_expires_before = None
+                request.user.oidc_profile.save(update_fields=[
+                    'access_token',
+                    'expires_before',
+                    'refresh_token',
+                    'refresh_expires_before'
+                ])
 
-        user = authenticate(request=request,
-                            code=request.GET['code'],
-                            redirect_uri=nonce.redirect_uri)
+            logout(request)
+            return HttpResponseRedirect(reverse('keycloak_login'))
 
         RemoteUserModel = get_remote_user_model()
         if isinstance(user, RemoteUserModel):
